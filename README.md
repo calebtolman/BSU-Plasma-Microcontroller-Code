@@ -26,7 +26,7 @@ Navigate to the folder with the file you want to commit. Do this by using 'cd [d
   You can return the contents of the folder with 'ls'
   
 Once you are in the right place, type 'git clone [repository URL]'. Get the repository URL from the github repository by clicking button labeled '<> Clone'
-  This will configure your local folder with the github repo. It also makes a new folder in the directory you are in with all the stuff from the github repo, Ex. MyFolder/BSU-Plasma-Microcontroller-Code. Move the files in the new folder to the first folder. Delete the empty new folder.
+  This will configure your local folder with the github repo. It also makes a new folder in the directory you are in with all the stuff from the github repo, Ex. MyFolder/BSU-Plasma-Microcontroller-Code. Move the files in the new folder to the first folder. Delete the empty new folder. What is in your first folder is what will be uploaded to Github.
 
 Now, to commit to the repo with your new file, make sure you are in the correct directory on your computer, Ex. MyFolder/, and it has all the files that are currently in the github repo + the files you want to put in the github repo.\
   Type 'git add .' The dot is so it stages all of the files in the directory you are in.\
