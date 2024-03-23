@@ -92,6 +92,31 @@ void Error_Handler(void);
 
 /* USER CODE BEGIN Private defines */
 
+// Define GPIO pins to enable power supplies
+// ... is the placeholder for actual GPIO port
+#define POWER_SUPPLY_15V_ENABLE_PIN ...
+#define POWER_SUPPLY_3V3_ENABLE_PIN ...
+#define POWER_SUPPLY_500V_ENABLE_PIN ...
+#define H_BRIDGE_ENABLE_PIN ...
+
+// ADC Channel definitions
+#define ADC_CHANNEL_15V  ADC_CHANNEL_0 // Replace with the actual channel number
+#define ADC_CHANNEL_3V3  ADC_CHANNEL_1 // Replace with the actual channel number
+#define ADC_CHANNEL_500V ADC_CHANNEL_2 // Replace with the actual channel number
+#define ADC_CHANNEL_1KV2KV ADC_CHANNEL_3 // Replace with the actual channel number
+
+// Define voltage thresholds
+// minimum acceptable voltage should be (Vin/Vref)*(2^(ADC bit resolution)  - 1)
+#define VOLTAGE_15V_THRESHOLD  ... // The minimum acceptable voltage reading for 15V
+#define VOLTAGE_3V3_THRESHOLD  ... // The minimum acceptable voltage reading for 3.3V
+#define VOLTAGE_500V_THRESHOLD ... // The minimum acceptable voltage reading for 500V
+#define VOLTAGE_1KV2KV_THRESHOLD ... // The minimum acceptable voltage reading for 1-2kVrms
+
+// Constants for adjustments
+#define K_1 ... // Define your constant for frequency adjustment
+#define K_2 ... // Define your constant for dead time adjustment
+#define TIM_PERIOD_MAX ... // Define the maximum value for TIM1's period
+
 /* USER CODE END Private defines */
 
 #ifdef __cplusplus

@@ -21,6 +21,8 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "stm32h7xx_hal.h"
+#include <string.h>
 
 /* USER CODE END Includes */
 
@@ -93,42 +95,50 @@ int main(void)
   /* USER CODE END SysInit */
 
   /* Initialize all configured peripherals */
-  MX_GPIO_Init();
-  MX_ADC1_Init();
-  MX_TIM1_Init();
-  MX_USART3_UART_Init();
-  MX_USB_OTG_HS_USB_Init();
+
   /* USER CODE BEGIN 2 */
-  adc_setup(); // Initialize ADCs with interrupts or DMA
-  power_up_sequence(); // Power up sequence
-  verify_voltage(); // Verify voltage levels
-  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1); // Start PWM
+MX_GPIO_Init();
+MX_ADC1_Init();
+MX_TIM1_Init();
+MX_USART3_UART_Init();
+MX_USB_OTG_HS_USB_Init();
+MX_IWDG_Init();
+// Initial PWM settings
+htim1.Instance->ARR = initial_period; // Set initial auto-reload value for frequency
+htim1.Instance->CCR1 = initial_duty_cycle; // Set initial compare value for duty cycle
+htim1.Instance->BDTR = initial_dead_time; // Set initial dead time
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-	  /* Measure ADCs - this could be an interrupt or DMA based on your design */
-	  measure_adcs();
+	  // enable the DC-DC converters and H-bridge, verify voltage
+	  power_up_sequence();
 
-      /* ADC calculations and PWM adjustments based on measurements */
-      adjust_pwm();
+	  // pet the watch dog, Perform system checks
+	  HAL_IWDG_Refresh(&hiwdg); // must be done more frequently than timeout period or system will reset
+	  check_system_parameters();
 
-      /* End PWM if necessary */
-      HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_1);
+	  // Start ADC in interrupt mode
+	  HAL_ADC_Start_IT(&hadc1);
 
-      /* Power-down sequence */
-      power_down_sequence();
+	  // Start PWM
+	  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
 
-      /* Check if voltage is still present */
-      check_voltage_still_present();
+	  // Measure from ADCs, Adjust PWM, Dead time accordingly
+	  HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc1);
 
-      /* Delay or sleep for a specified time if necessary */
-	  HAL_Delay(1000); // Example delay of 1 second
+	  // pet the watch dog, Perform system checks
+	  HAL_IWDG_Refresh(&hiwdg);
+	  check_system_parameters();
 
-      /* Other monitoring tasks like checking voltage, temperature, fan speed */
-      // Implement watchdog or periodic checks
+	  // End PWM
+	  HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_1); // This should be ended when the user specifies
+
+	  // Power Down
+	  power_down_sequence();
+
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -137,29 +147,252 @@ int main(void)
 }
 
 /* USER FUNCTIONS BEGIN */
+
+// Verify the voltages are present so the power up sequence can begin
+HAL_StatusTypeDef verify_voltage(ADC_HandleTypeDef* hadc, uint32_t ADCChannel, uint32_t ThresholdVoltage)
+{
+    // Initialize the ADC channel configuration structure to zeros.
+    ADC_ChannelConfTypeDef sConfig = {0};
+
+    // Set the desired channel to be measured.
+    sConfig.Channel = ADCChannel;
+
+    // Set the rank. If only one channel is being measured, it will be rank 1.
+    sConfig.Rank = ADC_REGULAR_RANK_1;
+
+    // Set the sampling time to a very short duration, assuming the voltage signal is stable.
+    sConfig.SamplingTime = ADC_SAMPLETIME_1CYCLE_5;
+
+    // Configure the ADC channel with the specified settings.
+    HAL_ADC_ConfigChannel(hadc, &sConfig);
+
+    // Start the ADC peripheral.
+    HAL_ADC_Start(hadc);
+
+    // Poll the ADC for the conversion result, timeout set to 10ms.
+    HAL_StatusTypeDef status = HAL_ADC_PollForConversion(hadc, 10);
+
+    // If the ADC finishes the conversion successfully,
+    // check if the value meets the required threshold.
+    if (status == HAL_OK)
+    {
+        // Get the ADC conversion result.
+        uint32_t ADCValue = HAL_ADC_GetValue(hadc);
+
+        // Compare the conversion result to the threshold.
+        if (ADCValue < ThresholdVoltage)
+        {
+            // If the result is less than the threshold, update status to HAL_ERROR.
+            status = HAL_ERROR;
+        }
+    }
+
+    // Stop the ADC to save power, especially if not sampling continuously.
+    HAL_ADC_Stop(hadc);
+
+    // Return the status which indicates whether the voltage is above the threshold.
+    return status;
+}
+
+// Enable all DC-DC converters and H-bridge (15V)
 void power_up_sequence() {
-  // Code to enable all DC-DC converters and H-bridge (15V)
-}
+  // 1. Enable 15V power supply
+  HAL_GPIO_WritePin(POWER_SUPPLY_15V_ENABLE_GPIO_Port, POWER_SUPPLY_15V_ENABLE_Pin, GPIO_PIN_SET);
 
-void verify_voltage() {
-  // Code to check voltage levels, potentially using adc_poll()
-}
+  // 2. Verify 15V is available
+  if(verify_voltage(&hadc1, ADC_CHANNEL_15V, VOLTAGE_15V_THRESHOLD) != HAL_OK) { // There is a warning because these are not defined in main.h
+	  // Make the RED led blink if the 15V is not present
+	  HAL_GPIO_WritePin(LED_RED_GPIO_Port, LED_RED_Pin, GPIO_PIN_SET); // Assuming there is an error LED
+	  while(1) {
+	      HAL_Delay(1000);
+	      HAL_GPIO_TogglePin(LED_RED_GPIO_Port, LED_RED_Pin); // Blink an LED to indicate error
+	      // Send an error message over UART
+	      char* errorMsg = "Error: 15V supply not present.\r\n";
+	      HAL_UART_Transmit(&huart3, (uint8_t*)errorMsg, strlen(errorMsg), HAL_MAX_DELAY);
+	  }
+  }
 
-void measure_adcs() {
-  // Code to measure ADC values for frequency, voltage, etc.
-}
+  // 3. Enable 3.3V bias voltage
+  HAL_GPIO_WritePin(POWER_SUPPLY_3V3_ENABLE_GPIO_Port, POWER_SUPPLY_3V3_ENABLE_Pin, GPIO_PIN_SET);
 
-void adjust_pwm() {
-  // Code to adjust PWM based on ADC measurements
+  // 4. Verify 3.3V is available
+  if(verify_voltage(&hadc1, ADC_CHANNEL_3V3, VOLTAGE_3V3_THRESHOLD) != HAL_OK) {
+	  // Make the RED led blink if the 3.3V is not present
+	  HAL_GPIO_WritePin(LED_RED_GPIO_Port, LED_RED_Pin, GPIO_PIN_SET); // Assuming there is an error LED
+	  while(1) {
+	      HAL_Delay(1000);
+	      HAL_GPIO_TogglePin(LED_RED_GPIO_Port, LED_RED_Pin); // Blink an LED to indicate error
+	      // Send an error message over UART
+	      char* errorMsg = "Error: 3.3V supply not present.\r\n";
+	      HAL_UART_Transmit(&huart3, (uint8_t*)errorMsg, strlen(errorMsg), HAL_MAX_DELAY);
+	  }
+  }
+
+  // 5. Enable 500V power supply
+  HAL_GPIO_WritePin(POWER_SUPPLY_500V_ENABLE_GPIO_Port, POWER_SUPPLY_500V_ENABLE_Pin, GPIO_PIN_SET);
+
+  // 6. Verify 500V is available
+  if(verify_voltage(&hadc1, ADC_CHANNEL_500V, VOLTAGE_500V_THRESHOLD) != HAL_OK) {
+	  // Make the RED led blink if the 500V is not present
+	  HAL_GPIO_WritePin(LED_RED_GPIO_Port, LED_RED_Pin, GPIO_PIN_SET); // Assuming there is an error LED
+	  while(1) {
+	      HAL_Delay(1000);
+	      HAL_GPIO_TogglePin(LED_RED_GPIO_Port, LED_RED_Pin); // Blink an LED to indicate error
+	      // Send an error message over UART
+	      char* errorMsg = "Error: 500V supply not present.\r\n";
+	      HAL_UART_Transmit(&huart3, (uint8_t*)errorMsg, strlen(errorMsg), HAL_MAX_DELAY);
+	  }
+  }
+
+  // 7. Drive H-bridge
+  HAL_GPIO_WritePin(H_BRIDGE_ENABLE_GPIO_Port, H_BRIDGE_ENABLE_Pin, GPIO_PIN_SET);
+
+  // 8. Verify that 1-2kVrms is available
+  if(verify_voltage(&hadc1, ADC_CHANNEL_1KV2KV, VOLTAGE_1KV2KV_THRESHOLD) != HAL_OK) {
+	  // Make the RED led blink if the 1-2kVrms is not present
+	  HAL_GPIO_WritePin(LED_RED_GPIO_Port, LED_RED_Pin, GPIO_PIN_SET); // Assuming there is an error LED
+	  while(1) {
+	      HAL_Delay(1000);
+	      HAL_GPIO_TogglePin(LED_RED_GPIO_Port, LED_RED_Pin); // Blink an LED to indicate error
+	      // Send an error message over UART
+	      char* errorMsg = "Error: 1-2kVrms supply not present.\r\n";
+	      HAL_UART_Transmit(&huart3, (uint8_t*)errorMsg, strlen(errorMsg), HAL_MAX_DELAY);
+	  }
+  }
+
+  // 9. Done.
 }
 
 void power_down_sequence() {
-  // Code to disable power and prepare for shutdown
+    // 1. Stop driving H-bridge
+    HAL_GPIO_WritePin(H_BRIDGE_ENABLE_GPIO_Port, H_BRIDGE_ENABLE_Pin, GPIO_PIN_RESET);
+
+    // 2. Verify if 1-2kVrms is available, if yes send error
+    if(verify_voltage(&hadc1, ADC_CHANNEL_1KV2KV, VOLTAGE_1KV2KV_THRESHOLD) == HAL_OK) {
+    	// Make the RED led blink if the 1-2kVrms is present
+    	HAL_GPIO_WritePin(LED_RED_GPIO_Port, LED_RED_Pin, GPIO_PIN_SET); // Assuming there is an error LED
+    	while(1) {
+    		HAL_Delay(1000);
+    		HAL_GPIO_TogglePin(LED_RED_GPIO_Port, LED_RED_Pin); // Blink an LED to indicate error
+    		// Send an error message over UART
+    		char* errorMsg = "Error: 1-2kVrms supply is still present.\r\n";
+    		HAL_UART_Transmit(&huart3, (uint8_t*)errorMsg, strlen(errorMsg), HAL_MAX_DELAY);
+    	}
+    }
+
+    // 3. Disable 500V power supply
+    HAL_GPIO_WritePin(POWER_SUPPLY_500V_ENABLE_GPIO_Port, POWER_SUPPLY_500V_ENABLE_Pin, GPIO_PIN_RESET);
+
+    // 4. Verify if 500V is available, if yes then send error
+    if(verify_voltage(&hadc1, ADC_CHANNEL_500V, VOLTAGE_500V_THRESHOLD) == HAL_OK) {
+    	// Make the RED led blink if the 500V is present
+    	HAL_GPIO_WritePin(LED_RED_GPIO_Port, LED_RED_Pin, GPIO_PIN_SET); // Assuming there is an error LED
+    	while(1) {
+    		HAL_Delay(1000);
+    	    HAL_GPIO_TogglePin(LED_RED_GPIO_Port, LED_RED_Pin); // Blink an LED to indicate error
+    	    // Send an error message over UART
+    	    char* errorMsg = "Error: 500V supply is still present.\r\n";
+    	    HAL_UART_Transmit(&huart3, (uint8_t*)errorMsg, strlen(errorMsg), HAL_MAX_DELAY);
+    	}
+    }
+
+    // 5. Disable 3.3V bias voltage
+    HAL_GPIO_WritePin(POWER_SUPPLY_3V3_ENABLE_GPIO_Port, POWER_SUPPLY_3V3_ENABLE_Pin, GPIO_PIN_RESET);
+
+    // 6. Verify if 3.3V is present, if yes then send error
+    if(verify_voltage(&hadc1, ADC_CHANNEL_3V3, VOLTAGE_3V3_THRESHOLD) == HAL_OK) {
+    	// Make the RED led blink if the 3.3V is present
+    	HAL_GPIO_WritePin(LED_RED_GPIO_Port, LED_RED_Pin, GPIO_PIN_SET); // Assuming there is an error LED
+    	while(1) {
+    	 	HAL_Delay(1000);
+    	    HAL_GPIO_TogglePin(LED_RED_GPIO_Port, LED_RED_Pin); // Blink an LED to indicate error
+    	    // Send an error message over UART
+    	    char* errorMsg = "Error: 3.3V supply is still present.\r\n";
+    	    HAL_UART_Transmit(&huart3, (uint8_t*)errorMsg, strlen(errorMsg), HAL_MAX_DELAY);
+    	}
+    }
+
+    // 7. Disable 15V power supply
+    HAL_GPIO_WritePin(POWER_SUPPLY_15V_ENABLE_GPIO_Port, POWER_SUPPLY_15V_ENABLE_Pin, GPIO_PIN_RESET);
+
+    // 8. Verify if 15V is present, if yes then send error
+    if(verify_voltage(&hadc1, ADC_CHANNEL_15V, VOLTAGE_15V_THRESHOLD) == HAL_OK) {
+    	// Make the RED led blink if the 15V is present
+    	HAL_GPIO_WritePin(LED_RED_GPIO_Port, LED_RED_Pin, GPIO_PIN_SET); // Assuming there is an error LED
+    	while(1) {
+    	HAL_Delay(1000);
+    	HAL_GPIO_TogglePin(LED_RED_GPIO_Port, LED_RED_Pin); // Blink an LED to indicate error
+    	// Send an error message over UART
+    	char* errorMsg = "Error: 15V supply is still present.\r\n";
+    	HAL_UART_Transmit(&huart3, (uint8_t*)errorMsg, strlen(errorMsg), HAL_MAX_DELAY);
+    	}
+    }
+
+    // 9. Done
 }
 
-void check_voltage_still_present() {
-  // Code to verify voltage levels after shutdown
+// Function to adjust PWM frequency based on delta_f
+void adjust_pwm_frequency(uint32_t delta_f)
+{
+    // Calculate the new period
+    uint32_t new_period = htim1.Instance->ARR - delta_f;
+
+    // Make sure the new period value does not exceed the maximum value
+    if(new_period > TIM_PERIOD_MAX){
+    	new_period = TIM_PERIOD_MAX;
+    }
+
+    // Update the timer's auto-reload register to adjust the frequency
+    __HAL_TIM_SET_AUTORELOAD(&htim1, new_period);
 }
+
+// Function to adjust PWM dead time based on delta_t
+void adjust_pwm_deadtime(uint32_t delta_t)
+{
+    // Update the timer's dead-time register to adjust the dead time
+    __HAL_TIM_SET_DEADTIME(&htim1, delta_t);
+}
+
+// ADC interrupt callback function
+void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc)
+{
+    if(hadc->Instance == ADC1)
+    {
+        // Read ADC values
+        uint32_t bridge_current = HAL_ADC_GetValue(hadc); // Example, actual implementation may vary
+        uint32_t plasma_voltage = HAL_ADC_GetValue(hadc); // Example, actual implementation may vary
+
+        // Calculate adjustments
+        uint32_t delta_f = K_1 * (bridge_current - previous_bridge_current) / (I_smax - I_smin);
+        uint32_t delta_t = K_2 * (V_desired - plasma_voltage);
+
+        // Adjust PWM parameters
+        adjust_pwm_frequency(delta_f);
+        adjust_pwm_deadtime(delta_t);
+
+        // Start the next ADC conversion
+        HAL_ADC_Start_IT(hadc);
+    }
+}
+
+// initialize watch dog
+void MX_IWDG_Init(void) {
+    IWDG_HandleTypeDef hiwdg;
+
+    hiwdg.Instance = IWDG;
+    hiwdg.Init.Prescaler = IWDG_PRESCALER_64; // Adjust prescaler
+    hiwdg.Init.Reload = 4095; // Adjust reload value to get the desired timeout period
+    HAL_IWDG_Init(&hiwdg);
+}
+
+void check_system_parameters(void) {
+    if (!is_voltage_ok() || !is_temperature_ok() || !is_fan_speed_ok())
+    {
+        // Handle error
+        error_handler();
+    }
+}
+
 /* USER FUNCTIONS END */
 
 /**
